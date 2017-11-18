@@ -27,6 +27,7 @@ class ModelSelector(object):
         self.max_n_components = max_n_components
         self.random_state = random_state
         self.verbose = verbose
+        self.n_components = range(self.min_n_components, self.max_n_components + 1)
 
     def select(self):
         raise NotImplementedError
@@ -75,10 +76,24 @@ class SelectorBIC(ModelSelector):
         :return: GaussianHMM object
         """
         warnings.filterwarnings("ignore", category=DeprecationWarning)
-
-        # TODO implement model selection based on BIC scores
-        raise NotImplementedError
-
+        best_score = float("inf") # KEEP LOWEST
+        best_model = None
+        for num_states in range(self.min_n_components, self.max_n_components + 1):
+            try:
+                model = self.base_model(num_states)
+                logL = model.score(self.X, self.lengths)
+                # From Forum -> parameters = n * n + 2 * n * d
+                parameters = num_states * (num_states - 1) + 2 * self.X.shape[1] * num_states
+                score = -2 * logL + parameters * math.log(self.X.shape[0])
+                if score < best_score:
+                    best_score = score
+                    best_model = model
+            except Exception as e:
+                pass
+        if best_model is None:
+            return self.base_model(self.n_constant)
+        else:
+            return best_model
 
 class SelectorDIC(ModelSelector):
     ''' select best model based on Discriminative Information Criterion
@@ -86,16 +101,31 @@ class SelectorDIC(ModelSelector):
     Biem, Alain. "A model selection criterion for classification: Application to hmm topology optimization."
     Document Analysis and Recognition, 2003. Proceedings. Seventh International Conference on. IEEE, 2003.
     http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.58.6208&rep=rep1&type=pdf
-    https://pdfs.semanticscholar.org/ed3d/7c4a5f607201f3848d4c02dd9ba17c791fc2.pdf
     DIC = log(P(X(i)) - 1/(M-1)SUM(log(P(X(all but i))
     '''
 
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
+        best_score = float("-inf") # KEEP HIGHEST
+        best_model = None
 
-        # TODO implement model selection based on DIC scores
-        raise NotImplementedError
-
+        vocab = list(self.words)
+        vocab.remove(self.this_word)
+        for num_states in range(self.min_n_components, self.max_n_components + 1):
+            try:
+                total_score = 0
+                model = self.base_model(num_states)
+                logL = model.score(self.X, self.lengths)
+                for word in vocab:
+                    X, lengths = self.hwords[word]
+                    total_score += model.score(X, lengths)
+                score = logL - total_score / (len(self.words) - 1)
+                if best_score < score:
+                    best_score = score
+                    best_model = model
+            except:
+                    pass
+        return best_model
 
 class SelectorCV(ModelSelector):
     ''' select best model based on average log Likelihood of cross-validation folds
@@ -104,6 +134,36 @@ class SelectorCV(ModelSelector):
 
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
-
-        # TODO implement model selection using CV
-        raise NotImplementedError
+        best_score = float("-inf") #KEEP HIGHEST
+        best_model = None
+        for num_states in range(self.min_n_components, self.max_n_components + 1):
+            scores = []
+            n_splits = 3
+            model, logL = None, None
+            # Check Data Amount
+            if len(self.sequences) < n_splits:
+                break
+            split_method = KFold(random_state=self.random_state, n_splits=n_splits)
+            for cv_train_idx, cv_test_idx in split_method.split(self.sequences):
+                # Help from the Forums.
+                x_train, lengths_train = combine_sequences(cv_train_idx, self.sequences)
+                # Split Training sequences
+                x_test, lengths_test = combine_sequences(cv_test_idx, self.sequences)
+                try:
+                    model = GaussianHMM(n_components=num_states, 
+                                        n_iter=1000,).fit(x_train, lengths_train)
+                    logL = model.score(x_test, lengths_test)
+                    scores.append(logL)
+                except Exception as e:
+                    break
+            avg = None
+            if len(scores) > 0:
+                avg = np.average(scores)
+            else:
+                avg = float("-inf")
+            if avg > best_score:
+                best_score, best_model = avg, model
+        if best_model is None:
+            return self.base_model(self.n_constant)
+        else:
+            return best_model
